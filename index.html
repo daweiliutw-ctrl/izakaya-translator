@@ -144,11 +144,16 @@
     .empty .big { font-size: 44px; margin-bottom: 12px; }
     .empty p { margin: 6px 0; }
 
-    /* ---------- Image area (collapsible) ---------- */
-    #image-area { padding: 10px 12px 0; }
+    /* ---------- Image area (sticky, collapsible) ---------- */
+    #image-area {
+      padding: 8px 12px 8px;
+      position: sticky; top: 0; z-index: 6;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
     .image-head {
       display: flex; align-items: center; gap: 8px;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
     .image-head-title { font-size: 14px; color: var(--text-dim); }
     .image-toggle {
@@ -158,34 +163,56 @@
       font-size: 14px;
       border-radius: 10px;
     }
+    /* 限高視窗：圖太長時於框內自行捲動，清單仍同畫面可見 */
     .image-wrap {
-      position: relative;
       width: 100%;
+      max-height: 42vh;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
       border: 1px solid var(--border);
       border-radius: 12px;
-      overflow: hidden;
       background: #000;
     }
     .image-wrap.collapsed { display: none; }
+    /* 疊框的定位基準：與 <img> 同尺寸，box_2d 百分比才對齊 */
+    .image-stage { position: relative; width: 100%; }
     #menu-img { display: block; width: 100%; height: auto; }
 
-    /* 高亮框（§7 百分比疊框） */
+    /* 高亮框（§7 百分比疊框）— 淡顯且可點 */
     .hl-box {
       position: absolute;
-      border: 2.5px solid var(--accent);
+      border: 1.5px solid rgba(224,168,86,0.4);
       border-radius: 4px;
-      box-shadow: 0 0 0 9999px rgba(0,0,0,0); /* 佔位，避免重排 */
-      background: rgba(224,168,86,0.16);
-      pointer-events: none;
-      display: none;
+      background: transparent;
+      pointer-events: auto;
+      cursor: pointer;
       box-sizing: border-box;
     }
-    .hl-box.active { display: block; }
+    .hl-box.active {
+      border-width: 2.5px;
+      border-color: var(--accent);
+      background: rgba(224,168,86,0.18);
+    }
     .hl-box.flash { animation: hlflash 0.9s ease-out 2; }
     @keyframes hlflash {
-      0%, 100% { background: rgba(224,168,86,0.16); }
+      0%, 100% { background: rgba(224,168,86,0.18); }
       50%      { background: rgba(224,168,86,0.55); }
     }
+
+    /* 翻譯字幕條 */
+    .image-cap {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 8px;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+    }
+    .image-cap[hidden] { display: none; }
+    .cap-main { flex: 1; min-width: 0; }
+    .cap-zh { font-size: 16px; font-weight: 700; }
+    .cap-jp { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+    .cap-price { font-size: 15px; white-space: nowrap; }
 
     /* ---------- List area ---------- */
     #list-area { padding: 4px 12px calc(var(--safe-bottom) + 24px); }
@@ -232,6 +259,7 @@
       cursor: pointer;
     }
     .item-row:active { background: var(--surface); }
+    .item-row.sel { background: rgba(224,168,86,0.12); }
     .item-main { flex: 1; min-width: 0; }
     .item-zh {
       font-size: 16px; font-weight: 600;
@@ -398,15 +426,26 @@
     </div>
 
     <div class="main-scroll">
-      <!-- 原圖區（可收合，預設展開） -->
+      <!-- 原圖區（釘在上方、可收合，預設展開） -->
       <div id="image-area" class="hidden">
         <div class="image-head">
           <span class="image-head-title">原始菜單</span>
           <button id="toggle-image-btn" class="btn-ghost image-toggle">收合 ▲</button>
         </div>
         <div id="image-wrap" class="image-wrap">
-          <img id="menu-img" alt="正規化後的菜單照片">
-          <!-- 高亮框於 Stage 4 加入 -->
+          <div id="image-stage" class="image-stage">
+            <img id="menu-img" alt="正規化後的菜單照片">
+            <!-- 高亮框由 JS 插入於此 -->
+          </div>
+        </div>
+        <!-- 翻譯字幕條：點圖上的框或清單品項時顯示對應翻譯 -->
+        <div id="image-cap" class="image-cap" hidden>
+          <div class="cap-main">
+            <div class="cap-zh" id="cap-zh"></div>
+            <div class="cap-jp" id="cap-jp"></div>
+          </div>
+          <span class="cap-price" id="cap-price"></span>
+          <button class="icon-btn info-btn" id="cap-info" aria-label="料理說明">ⓘ</button>
         </div>
       </div>
       <!-- 清單區（Stage 3 接上） -->
@@ -524,6 +563,7 @@
     imageH: 0,
     menu: null,           // 解析結果 { categories: [...] }
     modelSource: null,    // 'flash' | 'pro'，目前結果來源
+    selectedId: null,     // 目前選取的品項 id
   };
 
   /* =========================================================
@@ -739,6 +779,9 @@
   function renderMenu() {
     const listArea = document.getElementById("list-area");
     if (!state.menu) { listArea.innerHTML = ""; return; }
+    // 重新渲染（含 Pro 重試）會換掉品項 id，重置選取與字幕條
+    state.selectedId = null;
+    document.getElementById("image-cap").hidden = true;
 
     const cats = state.menu.categories || [];
     let html = "";
@@ -806,11 +849,11 @@
     };
   }
 
-  // 依目前菜單在原圖區建立隱藏的高亮框（每個有效 box 一個）
+  // 依目前菜單在原圖區建立淡顯、可點的高亮框（每個有效 box 一個）
   function renderBoxes() {
-    const wrap = document.getElementById("image-wrap");
+    const stage = document.getElementById("image-stage");
     // 清除舊框，保留 <img>
-    wrap.querySelectorAll(".hl-box").forEach(el => el.remove());
+    stage.querySelectorAll(".hl-box").forEach(el => el.remove());
     if (!state.menu) return;
     state.menu.categories.forEach(cat => {
       (cat.items || []).forEach(item => {
@@ -824,30 +867,47 @@
         div.style.left = st.left;
         div.style.height = st.height;
         div.style.width = st.width;
-        wrap.appendChild(div);
+        stage.appendChild(div);
       });
     });
   }
 
-  // 點品項 → 展開原圖、捲入視野、對應框閃爍 + 持續描邊
-  function highlightItem(id) {
-    const wrap = document.getElementById("image-wrap");
-    // 清除前一個高亮
-    wrap.querySelectorAll(".hl-box.active").forEach(el => {
-      el.classList.remove("active", "flash");
-    });
-    const box = wrap.querySelector('.hl-box[data-id="' + cssEscape(id) + '"]');
-    if (!box) return; // 此品項無有效框：清單仍正常，不報錯
+  // 統一選取：標記框 + 字幕條 + 清單列同步（雙向共用）
+  function selectItem(id, opts) {
+    opts = opts || {};
+    const item = findItem(id);
+    if (!item) return;
+    state.selectedId = id;
 
-    // 若原圖收合則展開
-    setImageCollapsed(false);
-    // 捲動原圖區進入視野
-    document.getElementById("image-area").scrollIntoView({ behavior: "smooth", block: "start" });
+    setImageCollapsed(false); // 確保原圖展開
 
-    box.classList.add("active");
-    // 觸發 reflow 以重啟動畫
-    void box.offsetWidth;
-    box.classList.add("flash");
+    // 框：清除舊的，標記新的
+    const stage = document.getElementById("image-stage");
+    stage.querySelectorAll(".hl-box.active").forEach(el => el.classList.remove("active", "flash"));
+    const box = stage.querySelector('.hl-box[data-id="' + cssEscape(id) + '"]');
+    if (box) {
+      box.classList.add("active");
+      void box.offsetWidth; // 重啟動畫
+      box.classList.add("flash");
+      // 將框捲入限高視窗內（圖很長時）；nearest 以免連帶捲動下方清單
+      box.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    }
+
+    // 字幕條：顯示翻譯（即使該品項無框也照顯示）
+    document.getElementById("cap-zh").textContent = item.name_zh || "";
+    document.getElementById("cap-jp").textContent = item.name_jp || "";
+    const capPrice = document.getElementById("cap-price");
+    capPrice.textContent = (item.price != null && item.price !== "") ? item.price : "";
+    document.getElementById("image-cap").hidden = false;
+
+    // 清單列：標記選取並（若由圖片觸發）捲到該列
+    const listArea = document.getElementById("list-area");
+    listArea.querySelectorAll(".item-row.sel").forEach(el => el.classList.remove("sel"));
+    const row = listArea.querySelector('.item-row[data-id="' + cssEscape(id) + '"]');
+    if (row) {
+      row.classList.add("sel");
+      if (opts.scrollList) row.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 
   // 簡易 CSS 屬性選擇器跳脫（id 由前端產生，通常為 i0.. 但仍防一手）
@@ -929,10 +989,12 @@
       state.imageBase64  = norm.base64;
       state.imageW = norm.w;
       state.imageH = norm.h;
-      // 新照片：清掉舊結果再顯示
+      // 新照片：清掉舊結果與選取狀態再顯示
       state.menu = null;
       state.modelSource = null;
+      state.selectedId = null;
       document.getElementById("list-area").innerHTML = "";
+      document.getElementById("image-cap").hidden = true;
       showImage(norm.dataUrl);
     } catch (e) {
       console.error(e);
@@ -1060,7 +1122,18 @@
 
     document.getElementById("toggle-image-btn").addEventListener("click", toggleImage);
 
-    // 清單事件委派：點品項列 → 高亮定位；ⓘ → 說明（Stage 5）
+    // 點圖上的框 → 選取該品項（並把清單捲到該列）
+    document.getElementById("image-stage").addEventListener("click", (e) => {
+      const box = e.target.closest(".hl-box");
+      if (box) selectItem(box.dataset.id, { scrollList: true });
+    });
+
+    // 字幕條的 ⓘ → 該品項說明
+    document.getElementById("cap-info").addEventListener("click", () => {
+      if (state.selectedId) explainItem(state.selectedId);
+    });
+
+    // 清單事件委派：Pro 重試／ⓘ 說明／點品項列 → 選取定位
     document.getElementById("list-area").addEventListener("click", (e) => {
       if (e.target.closest("#pro-retry-btn")) {
         retryWithPro();
@@ -1072,7 +1145,7 @@
         return;
       }
       const row = e.target.closest(".item-row");
-      if (row) highlightItem(row.dataset.id);
+      if (row) selectItem(row.dataset.id);
     });
 
     // 料理說明 sheet：關閉與重試
