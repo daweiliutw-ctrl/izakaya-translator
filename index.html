@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="菜單翻譯">
+  <meta name="theme-color" content="#0f171e">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="manifest" href="manifest.json">
+  <title>居酒屋菜單翻譯</title>
+  <style>
+    /* ---------- Design tokens ---------- */
+    :root {
+      --bg: #0f171e;
+      --surface: #18242e;
+      --surface-2: #20303c;
+      --border: #2c4150;
+      --text: #f2f5f7;
+      --text-dim: #9fb2c0;
+      --accent: #e0a856;
+      --accent-press: #c9923f;
+      --danger: #e06a5a;
+      --danger-press: #c4523f;
+      --tap: 44px; /* minimum touch target */
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC",
+                   "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      font-size: 17px;
+      line-height: 1.5;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    /* ---------- View switching ---------- */
+    .view { display: none; min-height: 100%; flex-direction: column; }
+    .view.active { display: flex; }
+
+    /* ---------- Buttons ---------- */
+    button {
+      font: inherit;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      min-height: var(--tap);
+      padding: 10px 16px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button:active { background: var(--surface); }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #1a1205;
+      font-weight: 600;
+    }
+    .btn-primary:active { background: var(--accent-press); border-color: var(--accent-press); }
+    .btn-danger {
+      background: transparent;
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .btn-danger:active { background: rgba(224,106,90,0.12); }
+    .btn-ghost { background: transparent; border-color: transparent; }
+    .icon-btn {
+      min-width: var(--tap);
+      min-height: var(--tap);
+      padding: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    /* ---------- Settings view ---------- */
+    #view-settings { padding: calc(var(--safe-top) + 24px) 20px calc(var(--safe-bottom) + 24px); }
+    .settings-inner { max-width: 520px; margin: 0 auto; width: 100%; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    .lede { color: var(--text-dim); font-size: 15px; margin: 0 0 24px; }
+    .lede a { color: var(--accent); }
+    label { display: block; font-size: 14px; color: var(--text-dim); margin: 18px 0 6px; }
+    input[type="password"], input[type="text"] {
+      width: 100%;
+      font: inherit;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      min-height: var(--tap);
+      padding: 10px 14px;
+    }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+    .row { display: flex; gap: 10px; margin-top: 16px; }
+    .row > * { flex: 1; }
+    .key-state {
+      display: flex; align-items: center; gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-top: 8px;
+    }
+    .key-mask { font-family: ui-monospace, Menlo, monospace; letter-spacing: 1px; }
+    .hint { color: var(--text-dim); font-size: 13px; margin-top: 8px; }
+    .hidden { display: none !important; }
+
+    /* ---------- Main view ---------- */
+    #view-main { }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: calc(var(--safe-top) + 8px) 12px 8px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .topbar .title { font-size: 16px; font-weight: 600; }
+    .spacer { flex: 1; }
+
+    .main-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+    /* Empty state */
+    .empty {
+      padding: 48px 24px calc(var(--safe-bottom) + 24px);
+      text-align: center;
+      color: var(--text-dim);
+    }
+    .empty .big { font-size: 44px; margin-bottom: 12px; }
+    .empty p { margin: 6px 0; }
+
+    /* Placeholder for image + list areas, fleshed out in later stages */
+    #image-area, #list-area { padding: 0 12px; }
+  </style>
+</head>
+<body>
+
+  <!-- ================= 設定頁 ================= -->
+  <section id="view-settings" class="view">
+    <div class="settings-inner">
+      <h1>居酒屋菜單翻譯</h1>
+      <p class="lede">
+        拍一張日本菜單照片，翻成繁體中文並可在原圖上定位。
+        需要一組免費的 Gemini API key，可至
+        <a href="https://aistudio.google.com" target="_blank" rel="noopener">aistudio.google.com</a>
+        免費取得。
+      </p>
+
+      <!-- 尚無 key：輸入區 -->
+      <div id="key-input-block">
+        <label for="key-input">貼上你的 Gemini API key</label>
+        <input id="key-input" type="password" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" placeholder="AIza...">
+        <div class="row">
+          <button id="save-key-btn" class="btn-primary">儲存</button>
+        </div>
+        <p class="hint">key 只會存在這支裝置的瀏覽器（localStorage），不會上傳或外送。</p>
+      </div>
+
+      <!-- 已有 key：遮罩 + 清除 -->
+      <div id="key-saved-block" class="hidden">
+        <label>目前的 API key</label>
+        <div class="key-state">
+          <span class="key-mask" id="key-mask"></span>
+        </div>
+        <div class="row">
+          <button id="go-main-btn" class="btn-primary">開始使用</button>
+          <button id="clear-key-btn" class="btn-danger">清除 key</button>
+        </div>
+        <p class="hint">若翻譯一直顯示 key 無效，可清除後重新貼上。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 主畫面 ================= -->
+  <section id="view-main" class="view">
+    <div class="topbar">
+      <span class="title">菜單翻譯</span>
+      <span class="spacer"></span>
+      <!-- 拍照／選圖（影像處理於 Stage 2 接上） -->
+      <label class="icon-btn" for="file-input" aria-label="拍照或選圖" role="button">📷</label>
+      <input id="file-input" type="file" accept="image/*" capture="environment" class="hidden">
+      <button id="settings-btn" class="icon-btn btn-ghost" aria-label="設定">⚙️</button>
+    </div>
+
+    <div class="main-scroll">
+      <!-- 原圖區（Stage 2/4 接上） -->
+      <div id="image-area"></div>
+      <!-- 清單區（Stage 3 接上） -->
+      <div id="list-area"></div>
+      <!-- 空狀態引導 -->
+      <div id="empty-state" class="empty">
+        <div class="big">📷</div>
+        <p>還沒有菜單。</p>
+        <p>點右上角相機，拍一張或選一張日本菜單照片。</p>
+      </div>
+    </div>
+  </section>
+
+  <script>
+  "use strict";
+  /* =========================================================
+   * 易改常數（建置時可調整）
+   * =======================================================*/
+  const FLASH_MODEL = "gemini-2.5-flash";          // 預設、免費
+  const PRO_MODEL   = "gemini-2.5-pro";             // 手動高精度重試；Stage 6 建置時向官方確認
+  const API_BASE    = "https://generativelanguage.googleapis.com/v1beta/models";
+  const MAX_LONG_EDGE = 2048;                        // 影像長邊上限（px）
+  const JPEG_QUALITY  = 0.85;
+  const LS_KEY = "izakaya.geminiKey";                // localStorage 鍵名
+
+  /* =========================================================
+   * 應用狀態
+   * =======================================================*/
+  const state = {
+    apiKey: null,
+    // menu / image 等於後續階段加入
+  };
+
+  /* =========================================================
+   * View 切換
+   * =======================================================*/
+  function showView(name) {
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    document.getElementById("view-" + name).classList.add("active");
+    window.scrollTo(0, 0);
+  }
+
+  /* =========================================================
+   * API key 管理（localStorage）
+   * =======================================================*/
+  function loadKey() {
+    try { return localStorage.getItem(LS_KEY) || null; }
+    catch (e) { return null; }
+  }
+  function saveKey(k) {
+    try { localStorage.setItem(LS_KEY, k); } catch (e) {}
+    state.apiKey = k;
+  }
+  function clearKey() {
+    try { localStorage.removeItem(LS_KEY); } catch (e) {}
+    state.apiKey = null;
+  }
+  function maskKey(k) {
+    if (!k) return "";
+    if (k.length <= 10) return k.slice(0, 2) + "••••••";
+    return k.slice(0, 4) + "••••••" + k.slice(-4);
+  }
+
+  /* 依目前是否有 key，切換設定頁的兩個區塊 */
+  function renderSettings() {
+    const hasKey = !!state.apiKey;
+    document.getElementById("key-input-block").classList.toggle("hidden", hasKey);
+    document.getElementById("key-saved-block").classList.toggle("hidden", !hasKey);
+    if (hasKey) document.getElementById("key-mask").textContent = maskKey(state.apiKey);
+    document.getElementById("key-input").value = "";
+  }
+
+  /* =========================================================
+   * 事件綁定
+   * =======================================================*/
+  function bindEvents() {
+    document.getElementById("save-key-btn").addEventListener("click", () => {
+      const v = document.getElementById("key-input").value.trim();
+      if (!v) { alert("請先貼上 API key。"); return; }
+      saveKey(v);
+      renderSettings();
+      showView("main");
+    });
+
+    document.getElementById("go-main-btn").addEventListener("click", () => {
+      showView("main");
+    });
+
+    document.getElementById("clear-key-btn").addEventListener("click", () => {
+      if (!confirm("確定要清除已儲存的 API key 嗎？")) return;
+      clearKey();
+      renderSettings();
+    });
+
+    document.getElementById("settings-btn").addEventListener("click", () => {
+      renderSettings();
+      showView("settings");
+    });
+
+    // 影像處理於 Stage 2 接上
+    document.getElementById("file-input").addEventListener("change", (e) => {
+      // TODO Stage 2: canvas 正規化 → 顯示 → Gemini 解析
+      console.log("file selected (Stage 2 將處理):", e.target.files[0]);
+    });
+  }
+
+  /* =========================================================
+   * 啟動
+   * =======================================================*/
+  function init() {
+    state.apiKey = loadKey();
+    bindEvents();
+    renderSettings();
+    showView(state.apiKey ? "main" : "settings");
+  }
+
+  init();
+  </script>
+</body>
+</html>
