@@ -201,6 +201,19 @@
       border-radius: 999px;
       padding: 4px 10px;
     }
+    .pro-retry-btn {
+      margin-left: auto;
+      min-height: 36px;
+      padding: 6px 12px;
+      font-size: 13px;
+      border-radius: 10px;
+      border-color: var(--accent);
+      color: var(--accent);
+      background: transparent;
+      white-space: nowrap;
+    }
+    .pro-retry-btn:active { background: rgba(224,168,86,0.12); }
+    .pro-retry-btn:disabled { opacity: 0.5; }
 
     .cat-group { margin-top: 14px; }
     .cat-title {
@@ -395,7 +408,9 @@
    * 易改常數（建置時可調整）
    * =======================================================*/
   const FLASH_MODEL = "gemini-2.5-flash";          // 預設、免費
-  const PRO_MODEL   = "gemini-2.5-pro";             // 手動高精度重試；Stage 6 建置時向官方確認
+  // 手動高精度重試。向官方文件確認（2026-06）：Developer API 現行 Pro 為 gemini-3.1-pro-preview
+  // （ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview）。需 key 所屬專案開通付費。
+  const PRO_MODEL   = "gemini-3.1-pro-preview";
   const API_BASE    = "https://generativelanguage.googleapis.com/v1beta/models";
   const MAX_LONG_EDGE = 2048;                        // 影像長邊上限（px）
   const JPEG_QUALITY  = 0.85;
@@ -676,10 +691,11 @@
     const cats = state.menu.categories || [];
     let html = "";
 
-    // 結果來源列（Pro 重試鍵於 Stage 6 接上）
+    // 結果來源列 + 高精度(Pro)重試（§3.2 / §5.5）
+    const srcLabel = state.modelSource === "pro" ? "Pro（高精度）" : "Flash";
     html += '<div class="result-head">';
-    html += '<span class="source-tag" id="source-tag">目前結果來源：' +
-            (state.modelSource === "pro" ? "Pro" : "Flash") + "</span>";
+    html += '<span class="source-tag" id="source-tag">目前結果來源：' + srcLabel + "</span>";
+    html += '<button id="pro-retry-btn" class="pro-retry-btn">高精度(Pro)重試</button>';
     html += "</div>";
 
     cats.forEach(cat => {
@@ -872,6 +888,34 @@
     }
   }
 
+  /* =========================================================
+   * 模型升級：手動 Pro 重試（§5.5）
+   *  - 對同一張正規化影像以 PRO_MODEL 重跑 §5 解析，成功則覆蓋結果
+   *  - 未開通付費（403/PERMISSION_DENIED）→ 提示開通帳單，保留原 Flash 結果
+   * =======================================================*/
+  async function retryWithPro() {
+    if (!state.imageBase64) return;
+    setBusy(true, "高精度(Pro)辨識中…");
+    try {
+      const menu = await parseMenu(PRO_MODEL);
+      state.menu = menu;          // 覆蓋結果
+      state.modelSource = "pro";
+      renderMenu();
+    } catch (e) {
+      console.error(e);
+      // Pro 專屬 403：key 所屬專案未開通付費（保留 Flash 結果，不清空）
+      if (e && e.status === 403) {
+        alert("此 API key 未開通付費方案，無法使用高精度模型；" +
+              "請至 Google AI Studio 開啟帳單，或繼續使用免費結果。");
+      } else {
+        alert(messageForError(e));
+      }
+      // 不動 state.menu / modelSource，原結果保留
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /* 錯誤碼 → 使用者訊息（§10，Stage 7 再完整化） */
   function messageForError(e) {
     const s = e && e.status;
@@ -920,6 +964,10 @@
 
     // 清單事件委派：點品項列 → 高亮定位；ⓘ → 說明（Stage 5）
     document.getElementById("list-area").addEventListener("click", (e) => {
+      if (e.target.closest("#pro-retry-btn")) {
+        retryWithPro();
+        return;
+      }
       const infoBtn = e.target.closest(".info-btn");
       if (infoBtn) {
         explainItem(infoBtn.dataset.id);
