@@ -701,33 +701,50 @@
     constructor(message, status) { super(message); this.status = status; }
   }
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
   async function geminiGenerate(model, parts, generationConfig) {
     if (!state.apiKey) throw new ApiError("尚未設定 API key", 401);
     const url = API_BASE + "/" + model + ":generateContent";
-    let resp;
-    try {
-      resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": state.apiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ contents: [{ parts }], generationConfig }),
-      });
-    } catch (netErr) {
-      throw new ApiError("network", 0); // 網路失敗
+    const body = JSON.stringify({ contents: [{ parts }], generationConfig });
+
+    // 對暫時性失敗（fetch 連線中斷、500/503 伺服器忙碌）自動重試，短退避。
+    const MAX_TRIES = 3;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      if (attempt > 1) await sleep(700 * (attempt - 1)); // 0.7s、1.4s
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "x-goog-api-key": state.apiKey,
+            "Content-Type": "application/json",
+          },
+          body,
+        });
+      } catch (netErr) {
+        lastErr = new ApiError("network", 0); // 連線失敗（含 CORS 被擋的暫時性錯誤）
+        continue; // 重試
+      }
+      // 5xx 多為暫時性伺服器忙碌 → 重試
+      if (resp.status >= 500 && resp.status <= 599) {
+        lastErr = new ApiError("server", resp.status);
+        continue;
+      }
+      if (!resp.ok) {
+        let detail = "";
+        try { detail = (await resp.json()).error?.message || ""; } catch (e) {}
+        throw new ApiError(detail || ("HTTP " + resp.status), resp.status);
+      }
+      const data = await resp.json();
+      const cand = data.candidates && data.candidates[0];
+      const text = cand && cand.content && cand.content.parts
+        ? cand.content.parts.map(p => p.text || "").join("")
+        : "";
+      return text;
     }
-    if (!resp.ok) {
-      let detail = "";
-      try { detail = (await resp.json()).error?.message || ""; } catch (e) {}
-      throw new ApiError(detail || ("HTTP " + resp.status), resp.status);
-    }
-    const data = await resp.json();
-    const cand = data.candidates && data.candidates[0];
-    const text = cand && cand.content && cand.content.parts
-      ? cand.content.parts.map(p => p.text || "").join("")
-      : "";
-    return text;
+    throw lastErr; // 重試用盡仍失敗
   }
 
   /* 解析菜單（首次或 Pro 重試共用） */
@@ -1079,7 +1096,12 @@
   /* 錯誤碼 → 使用者訊息（§10） */
   function messageForError(e) {
     const s = e && e.status;
-    if (s === 0) return "網路連線失敗，請確認手機已連上網路後再試。";
+    if (s === 0) {
+      return (typeof navigator !== "undefined" && navigator.onLine === false)
+        ? "目前沒有網路連線，請確認手機已連上網路後再試。"
+        : "連線伺服器失敗（可能網路不穩或伺服器忙碌），請再試一次。";
+    }
+    if (s >= 500 && s <= 599) return "伺服器忙碌或暫時無法使用，請稍後再試。";
     if (s === 401 || s === 403) return "API key 無效，請至設定重新輸入。";
     if (s === 429) return "呼叫太頻繁或已達免費額度上限，請稍後再試。";
     if (e && e.message === "badjson") return "辨識結果格式異常，請重拍或重試。";
