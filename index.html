@@ -144,8 +144,54 @@
     .empty .big { font-size: 44px; margin-bottom: 12px; }
     .empty p { margin: 6px 0; }
 
-    /* Placeholder for image + list areas, fleshed out in later stages */
-    #image-area, #list-area { padding: 0 12px; }
+    /* ---------- Image area (collapsible) ---------- */
+    #image-area { padding: 10px 12px 0; }
+    .image-head {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 8px;
+    }
+    .image-head-title { font-size: 14px; color: var(--text-dim); }
+    .image-toggle {
+      margin-left: auto;
+      min-height: 36px;
+      padding: 6px 12px;
+      font-size: 14px;
+      border-radius: 10px;
+    }
+    .image-wrap {
+      position: relative;
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
+    .image-wrap.collapsed { display: none; }
+    #menu-img { display: block; width: 100%; height: auto; }
+
+    /* ---------- List area placeholder (Stage 3) ---------- */
+    #list-area { padding: 0 12px; }
+
+    /* ---------- Processing overlay ---------- */
+    #busy {
+      position: fixed; inset: 0;
+      background: rgba(8,12,16,0.72);
+      display: none;
+      align-items: center; justify-content: center;
+      flex-direction: column; gap: 14px;
+      z-index: 50;
+      color: var(--text);
+    }
+    #busy.show { display: flex; }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #busy .busy-text { font-size: 15px; color: var(--text-dim); }
   </style>
 </head>
 <body>
@@ -199,8 +245,17 @@
     </div>
 
     <div class="main-scroll">
-      <!-- 原圖區（Stage 2/4 接上） -->
-      <div id="image-area"></div>
+      <!-- 原圖區（可收合，預設展開） -->
+      <div id="image-area" class="hidden">
+        <div class="image-head">
+          <span class="image-head-title">原始菜單</span>
+          <button id="toggle-image-btn" class="btn-ghost image-toggle">收合 ▲</button>
+        </div>
+        <div id="image-wrap" class="image-wrap">
+          <img id="menu-img" alt="正規化後的菜單照片">
+          <!-- 高亮框於 Stage 4 加入 -->
+        </div>
+      </div>
       <!-- 清單區（Stage 3 接上） -->
       <div id="list-area"></div>
       <!-- 空狀態引導 -->
@@ -211,6 +266,12 @@
       </div>
     </div>
   </section>
+
+  <!-- 處理中遮罩 -->
+  <div id="busy">
+    <div class="spinner"></div>
+    <div class="busy-text" id="busy-text">處理中…</div>
+  </div>
 
   <script>
   "use strict";
@@ -229,8 +290,21 @@
    * =======================================================*/
   const state = {
     apiKey: null,
-    // menu / image 等於後續階段加入
+    imageDataUrl: null,   // 正規化後的 JPEG dataURL（同一張用於顯示與送 Gemini）
+    imageBase64: null,    // 上者去掉 data: 前綴的純 base64
+    imageW: 0,
+    imageH: 0,
+    // menu 結果於後續階段加入
   };
+
+  /* =========================================================
+   * 處理中遮罩
+   * =======================================================*/
+  function setBusy(on, text) {
+    const el = document.getElementById("busy");
+    if (text) document.getElementById("busy-text").textContent = text;
+    el.classList.toggle("show", !!on);
+  }
 
   /* =========================================================
    * View 切換
@@ -272,6 +346,94 @@
   }
 
   /* =========================================================
+   * 影像正規化（§4）
+   *  - 修正 EXIF 方向
+   *  - 等比縮放至長邊 <= MAX_LONG_EDGE
+   *  - 輸出 image/jpeg（品質 JPEG_QUALITY）的 dataURL
+   * 送 Gemini 與畫面顯示用「同一張」結果，box_2d 才不會錯位。
+   * =======================================================*/
+  async function decodeOriented(file) {
+    // 優先用 createImageBitmap 並要求依 EXIF 轉正
+    if (typeof createImageBitmap === "function") {
+      try {
+        return await createImageBitmap(file, { imageOrientation: "from-image" });
+      } catch (e) {
+        // 部分舊版 Safari 不支援該選項，退回不帶 options
+        try { return await createImageBitmap(file); } catch (e2) {}
+      }
+    }
+    // 最終退路：用 <img> 載入（現代 iOS Safari 對 <img> 已自動套用 EXIF 方向）
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("無法載入影像"));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  async function normalizeImage(file) {
+    const src = await decodeOriented(file);
+    const sw = src.width, sh = src.height;
+    const scale = Math.min(1, MAX_LONG_EDGE / Math.max(sw, sh));
+    const dw = Math.round(sw * scale);
+    const dh = Math.round(sh * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = dw;
+    canvas.height = dh;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(src, 0, 0, dw, dh);
+    if (src.close) src.close(); // 釋放 ImageBitmap
+
+    const dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+    return {
+      dataUrl,
+      base64: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      w: dw,
+      h: dh,
+    };
+  }
+
+  /* 顯示正規化後影像於原圖區 */
+  function showImage(dataUrl) {
+    document.getElementById("menu-img").src = dataUrl;
+    document.getElementById("image-area").classList.remove("hidden");
+    document.getElementById("empty-state").classList.add("hidden");
+    setImageCollapsed(false); // 新圖預設展開
+  }
+
+  /* 原圖區收合／展開 */
+  function setImageCollapsed(collapsed) {
+    document.getElementById("image-wrap").classList.toggle("collapsed", collapsed);
+    document.getElementById("toggle-image-btn").textContent =
+      collapsed ? "展開 ▼" : "收合 ▲";
+  }
+  function toggleImage() {
+    const wrap = document.getElementById("image-wrap");
+    setImageCollapsed(!wrap.classList.contains("collapsed"));
+  }
+
+  /* 處理選圖：正規化 → 顯示。（Gemini 解析於 Stage 3 接上） */
+  async function handleFile(file) {
+    if (!file) return;
+    setBusy(true, "處理影像中…");
+    try {
+      const norm = await normalizeImage(file);
+      state.imageDataUrl = norm.dataUrl;
+      state.imageBase64  = norm.base64;
+      state.imageW = norm.w;
+      state.imageH = norm.h;
+      showImage(norm.dataUrl);
+      // TODO Stage 3: 呼叫 Gemini 解析並渲染清單
+    } catch (e) {
+      console.error(e);
+      alert("影像處理失敗，請重拍或換一張。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* =========================================================
    * 事件綁定
    * =======================================================*/
   function bindEvents() {
@@ -298,11 +460,14 @@
       showView("settings");
     });
 
-    // 影像處理於 Stage 2 接上
-    document.getElementById("file-input").addEventListener("change", (e) => {
-      // TODO Stage 2: canvas 正規化 → 顯示 → Gemini 解析
-      console.log("file selected (Stage 2 將處理):", e.target.files[0]);
+    const fileInput = document.getElementById("file-input");
+    fileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      fileInput.value = ""; // 允許重選同一檔
+      handleFile(file);
     });
+
+    document.getElementById("toggle-image-btn").addEventListener("click", toggleImage);
   }
 
   /* =========================================================
