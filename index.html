@@ -169,6 +169,24 @@
     .image-wrap.collapsed { display: none; }
     #menu-img { display: block; width: 100%; height: auto; }
 
+    /* 高亮框（§7 百分比疊框） */
+    .hl-box {
+      position: absolute;
+      border: 2.5px solid var(--accent);
+      border-radius: 4px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0); /* 佔位，避免重排 */
+      background: rgba(224,168,86,0.16);
+      pointer-events: none;
+      display: none;
+      box-sizing: border-box;
+    }
+    .hl-box.active { display: block; }
+    .hl-box.flash { animation: hlflash 0.9s ease-out 2; }
+    @keyframes hlflash {
+      0%, 100% { background: rgba(224,168,86,0.16); }
+      50%      { background: rgba(224,168,86,0.55); }
+    }
+
     /* ---------- List area ---------- */
     #list-area { padding: 4px 12px calc(var(--safe-bottom) + 24px); }
 
@@ -631,7 +649,74 @@
     });
 
     listArea.innerHTML = html;
-    // 點品項列高亮（Stage 4）、ⓘ 說明（Stage 5）之事件於後續階段接上
+    renderBoxes(); // 同步建立原圖高亮框
+    // ⓘ 說明事件於 Stage 5 接上
+  }
+
+  /* =========================================================
+   * 功能二：百分比疊框 + 點選定位（§7）
+   * =======================================================*/
+  // 驗證 box_2d 並換算百分比；不合法回 null（graceful degrade）
+  function boxToStyle(box) {
+    if (!Array.isArray(box) || box.length !== 4) return null;
+    const [ymin, xmin, ymax, xmax] = box;
+    if ([ymin, xmin, ymax, xmax].some(v => typeof v !== "number" || !isFinite(v))) return null;
+    if (ymax <= ymin || xmax <= xmin) return null;
+    return {
+      top:    (ymin / 10) + "%",
+      left:   (xmin / 10) + "%",
+      height: ((ymax - ymin) / 10) + "%",
+      width:  ((xmax - xmin) / 10) + "%",
+    };
+  }
+
+  // 依目前菜單在原圖區建立隱藏的高亮框（每個有效 box 一個）
+  function renderBoxes() {
+    const wrap = document.getElementById("image-wrap");
+    // 清除舊框，保留 <img>
+    wrap.querySelectorAll(".hl-box").forEach(el => el.remove());
+    if (!state.menu) return;
+    state.menu.categories.forEach(cat => {
+      (cat.items || []).forEach(item => {
+        const st = boxToStyle(item.box_2d);
+        item._hasBox = !!st;
+        if (!st) return;
+        const div = document.createElement("div");
+        div.className = "hl-box";
+        div.dataset.id = item.id;
+        div.style.top = st.top;
+        div.style.left = st.left;
+        div.style.height = st.height;
+        div.style.width = st.width;
+        wrap.appendChild(div);
+      });
+    });
+  }
+
+  // 點品項 → 展開原圖、捲入視野、對應框閃爍 + 持續描邊
+  function highlightItem(id) {
+    const wrap = document.getElementById("image-wrap");
+    // 清除前一個高亮
+    wrap.querySelectorAll(".hl-box.active").forEach(el => {
+      el.classList.remove("active", "flash");
+    });
+    const box = wrap.querySelector('.hl-box[data-id="' + cssEscape(id) + '"]');
+    if (!box) return; // 此品項無有效框：清單仍正常，不報錯
+
+    // 若原圖收合則展開
+    setImageCollapsed(false);
+    // 捲動原圖區進入視野
+    document.getElementById("image-area").scrollIntoView({ behavior: "smooth", block: "start" });
+
+    box.classList.add("active");
+    // 觸發 reflow 以重啟動畫
+    void box.offsetWidth;
+    box.classList.add("flash");
+  }
+
+  // 簡易 CSS 屬性選擇器跳脫（id 由前端產生，通常為 i0.. 但仍防一手）
+  function cssEscape(s) {
+    return String(s).replace(/["\\\]]/g, "\\$&");
   }
 
   /* 依品項 id 找出 item 物件 */
@@ -725,6 +810,17 @@
     });
 
     document.getElementById("toggle-image-btn").addEventListener("click", toggleImage);
+
+    // 清單事件委派：點品項列 → 高亮定位；ⓘ → 說明（Stage 5）
+    document.getElementById("list-area").addEventListener("click", (e) => {
+      const infoBtn = e.target.closest(".info-btn");
+      if (infoBtn) {
+        // TODO Stage 5: 顯示料理說明 sheet
+        return;
+      }
+      const row = e.target.closest(".item-row");
+      if (row) highlightItem(row.dataset.id);
+    });
   }
 
   /* =========================================================
