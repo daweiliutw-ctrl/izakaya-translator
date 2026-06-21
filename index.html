@@ -494,8 +494,10 @@
   const API_BASE    = "https://generativelanguage.googleapis.com/v1beta/models";
   const MAX_LONG_EDGE = 2048;                        // 影像長邊上限（px）
   const JPEG_QUALITY  = 0.85;
-  // 翻譯（Flash）思考等級：minimal/low/medium/high。低一點較快、較穩（§5.2）。
-  const FLASH_THINKING_LEVEL = "low";
+  // 思考等級：minimal/low/medium/high。
+  // 解析需要 box_2d 定位 → 維持較高(medium)以保住「點圖跳翻譯」；說明為純文字 → 用 low 加速（§5.2）。
+  const PARSE_THINKING_LEVEL = "medium";
+  const EXPLAIN_THINKING_LEVEL = "low";
   const PARSE_TIMEOUT_MS = 45000;                    // 解析（含送圖）單次逾時
   const TEXT_TIMEOUT_MS  = 30000;                    // 純文字說明單次逾時
   const LS_KEY = "izakaya.geminiKey";                // localStorage 鍵名
@@ -769,9 +771,9 @@
       response_mime_type: "application/json",
       response_schema: PARSE_SCHEMA,
     };
-    // Flash 降低思考等級以加速、穩定；Pro 維持預設以求準度
+    // Flash 解析維持較高思考以保住 box_2d 定位準度；Pro 維持預設
     if (model === FLASH_MODEL) {
-      generationConfig.thinkingConfig = { thinkingLevel: FLASH_THINKING_LEVEL };
+      generationConfig.thinkingConfig = { thinkingLevel: PARSE_THINKING_LEVEL };
     }
     const raw = await geminiGenerate(model, parts, generationConfig, { timeoutMs: PARSE_TIMEOUT_MS, tries: 3 });
     let parsed;
@@ -996,7 +998,7 @@
       const text = await geminiGenerate(
         FLASH_MODEL,
         [{ text: explainPrompt(item) }],
-        { thinkingConfig: { thinkingLevel: FLASH_THINKING_LEVEL } }, // 純文字、降思考加速
+        { thinkingConfig: { thinkingLevel: EXPLAIN_THINKING_LEVEL } }, // 純文字、降思考加速
         { timeoutMs: TEXT_TIMEOUT_MS, tries: 2 }
       );
       const trimmed = (text || "").trim();
