@@ -169,8 +169,55 @@
     .image-wrap.collapsed { display: none; }
     #menu-img { display: block; width: 100%; height: auto; }
 
-    /* ---------- List area placeholder (Stage 3) ---------- */
-    #list-area { padding: 0 12px; }
+    /* ---------- List area ---------- */
+    #list-area { padding: 4px 12px calc(var(--safe-bottom) + 24px); }
+
+    .result-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 2px 4px;
+    }
+    .source-tag {
+      font-size: 13px; color: var(--text-dim);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+
+    .cat-group { margin-top: 14px; }
+    .cat-title {
+      display: flex; align-items: baseline; gap: 8px;
+      font-size: 15px; font-weight: 700; color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px; margin-bottom: 4px;
+    }
+    .cat-jp { font-size: 12px; font-weight: 400; color: var(--text-dim); }
+
+    .item-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 6px;
+      border-bottom: 1px solid rgba(44,65,80,0.5);
+      min-height: var(--tap);
+      cursor: pointer;
+    }
+    .item-row:active { background: var(--surface); }
+    .item-main { flex: 1; min-width: 0; }
+    .item-zh {
+      font-size: 16px; font-weight: 600;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .item-jp { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+    .item-price { font-size: 15px; color: var(--text); white-space: nowrap; }
+    .badge-unusual {
+      font-size: 11px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 6px;
+      padding: 0 5px; font-weight: 500;
+    }
+    .info-btn {
+      font-size: 20px; color: var(--text-dim);
+      background: transparent; border-color: transparent;
+      min-width: var(--tap); min-height: var(--tap);
+    }
 
     /* ---------- Processing overlay ---------- */
     #busy {
@@ -285,6 +332,57 @@
   const JPEG_QUALITY  = 0.85;
   const LS_KEY = "izakaya.geminiKey";                // localStorage 鍵名
 
+  /* 解析菜單的 prompt（§5.3） */
+  const PARSE_PROMPT = `你是日本餐廳菜單的翻譯與結構化引擎。輸入是一張菜單照片，可能是紙本、黑板或牆面手寫，
+可能含手寫字、反光或斜角拍攝。
+
+請完成：
+1. 辨識菜單上所有品項，包含手寫字。
+2. 依菜單原有分類分組；若沒有分類，全部歸入一個 category_zh 為「未分類」的群組。
+3. 將每個分類名稱與品項名稱翻譯成「繁體中文、台灣用語」。嚴禁簡體字、香港或中國大陸用語。
+4. 為每個品項標出其文字在圖片上的位置 box_2d，格式 [ymin, xmin, ymax, xmax]，
+   數值為相對整張圖、正規化到 0 至 1000 的整數（y 在前）。框可略寬，求涵蓋該品項文字即可。
+5. 若某品項對外國旅客明顯冷門或不易理解，is_unusual 設為 true，否則 false。
+6. 讀不出或不確定的字，name_jp 盡量保留原樣，name_zh 盡力翻譯，
+   無法判讀則於 name_zh 標註「（難以辨識）」。
+7. 不得杜撰菜單上不存在的品項。價格若無則為 null。
+
+只輸出符合 schema 的 JSON，不要任何額外文字、說明或 markdown 標記。`;
+
+  /* 回應 schema（§5.4） */
+  const PARSE_SCHEMA = {
+    type: "object",
+    properties: {
+      categories: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            category_jp: { type: "string" },
+            category_zh: { type: "string" },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name_jp: { type: "string" },
+                  name_zh: { type: "string" },
+                  price: { type: "string", nullable: true },
+                  box_2d: { type: "array", items: { type: "integer" }, minItems: 4, maxItems: 4 },
+                  is_unusual: { type: "boolean" }
+                },
+                required: ["id", "name_jp", "name_zh", "box_2d", "is_unusual"]
+              }
+            }
+          },
+          required: ["category_zh", "items"]
+        }
+      }
+    },
+    required: ["categories"]
+  };
+
   /* =========================================================
    * 應用狀態
    * =======================================================*/
@@ -294,7 +392,8 @@
     imageBase64: null,    // 上者去掉 data: 前綴的純 base64
     imageW: 0,
     imageH: 0,
-    // menu 結果於後續階段加入
+    menu: null,           // 解析結果 { categories: [...] }
+    modelSource: null,    // 'flash' | 'pro'，目前結果來源
   };
 
   /* =========================================================
@@ -413,7 +512,142 @@
     setImageCollapsed(!wrap.classList.contains("collapsed"));
   }
 
-  /* 處理選圖：正規化 → 顯示。（Gemini 解析於 Stage 3 接上） */
+  /* =========================================================
+   * Gemini REST 呼叫（§5）
+   * =======================================================*/
+  // 帶 HTTP 狀態碼的錯誤，供上層對應錯誤訊息
+  class ApiError extends Error {
+    constructor(message, status) { super(message); this.status = status; }
+  }
+
+  async function geminiGenerate(model, parts, generationConfig) {
+    if (!state.apiKey) throw new ApiError("尚未設定 API key", 401);
+    const url = API_BASE + "/" + model + ":generateContent";
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": state.apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ contents: [{ parts }], generationConfig }),
+      });
+    } catch (netErr) {
+      throw new ApiError("network", 0); // 網路失敗
+    }
+    if (!resp.ok) {
+      let detail = "";
+      try { detail = (await resp.json()).error?.message || ""; } catch (e) {}
+      throw new ApiError(detail || ("HTTP " + resp.status), resp.status);
+    }
+    const data = await resp.json();
+    const cand = data.candidates && data.candidates[0];
+    const text = cand && cand.content && cand.content.parts
+      ? cand.content.parts.map(p => p.text || "").join("")
+      : "";
+    return text;
+  }
+
+  /* 解析菜單（首次或 Pro 重試共用） */
+  async function parseMenu(model) {
+    const parts = [
+      { inline_data: { mime_type: "image/jpeg", data: state.imageBase64 } },
+      { text: PARSE_PROMPT },
+    ];
+    const generationConfig = {
+      response_mime_type: "application/json",
+      response_schema: PARSE_SCHEMA,
+    };
+    const raw = await geminiGenerate(model, parts, generationConfig);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      console.error("JSON 解析失敗，原始回應：", raw);
+      throw new ApiError("badjson", -1);
+    }
+    if (!parsed || !Array.isArray(parsed.categories)) {
+      console.error("回應結構異常：", parsed);
+      throw new ApiError("badjson", -1);
+    }
+    return normalizeMenu(parsed);
+  }
+
+  /* 補上唯一 id（§5.4 註）並保留既有 explanation 快取無關 */
+  function normalizeMenu(parsed) {
+    let n = 0;
+    parsed.categories.forEach(cat => {
+      if (!Array.isArray(cat.items)) cat.items = [];
+      cat.items.forEach(item => {
+        if (!item.id) item.id = "i" + (n++);
+      });
+    });
+    return parsed;
+  }
+
+  /* =========================================================
+   * 清單渲染（§3.2）
+   * =======================================================*/
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderMenu() {
+    const listArea = document.getElementById("list-area");
+    if (!state.menu) { listArea.innerHTML = ""; return; }
+
+    const cats = state.menu.categories || [];
+    let html = "";
+
+    // 結果來源列（Pro 重試鍵於 Stage 6 接上）
+    html += '<div class="result-head">';
+    html += '<span class="source-tag" id="source-tag">目前結果來源：' +
+            (state.modelSource === "pro" ? "Pro" : "Flash") + "</span>";
+    html += "</div>";
+
+    cats.forEach(cat => {
+      const zh = escapeHtml(cat.category_zh || "未分類");
+      const jp = cat.category_jp ? '<span class="cat-jp">' + escapeHtml(cat.category_jp) + "</span>" : "";
+      html += '<div class="cat-group">';
+      html += '<div class="cat-title">' + zh + jp + "</div>";
+      (cat.items || []).forEach(item => {
+        const price = item.price != null && item.price !== ""
+          ? '<span class="item-price">' + escapeHtml(item.price) + "</span>" : "";
+        const unusual = item.is_unusual ? '<span class="badge-unusual">冷門</span>' : "";
+        html += '<div class="item-row" data-id="' + escapeHtml(item.id) + '">';
+        html += '  <div class="item-main">';
+        html += '    <div class="item-zh">' + escapeHtml(item.name_zh) + unusual + "</div>";
+        html += '    <div class="item-jp">' + escapeHtml(item.name_jp) + "</div>";
+        html += "  </div>";
+        html += price;
+        html += '  <button class="icon-btn info-btn" data-id="' + escapeHtml(item.id) +
+                '" aria-label="料理說明">ⓘ</button>';
+        html += "</div>";
+      });
+      html += "</div>";
+    });
+
+    listArea.innerHTML = html;
+    // 點品項列高亮（Stage 4）、ⓘ 說明（Stage 5）之事件於後續階段接上
+  }
+
+  /* 依品項 id 找出 item 物件 */
+  function findItem(id) {
+    if (!state.menu) return null;
+    for (const cat of state.menu.categories) {
+      for (const item of (cat.items || [])) {
+        if (item.id === id) return item;
+      }
+    }
+    return null;
+  }
+
+  /* =========================================================
+   * 處理選圖：正規化 → 顯示 → Gemini 解析（Flash）→ 渲染
+   * =======================================================*/
   async function handleFile(file) {
     if (!file) return;
     setBusy(true, "處理影像中…");
@@ -424,13 +658,36 @@
       state.imageW = norm.w;
       state.imageH = norm.h;
       showImage(norm.dataUrl);
-      // TODO Stage 3: 呼叫 Gemini 解析並渲染清單
     } catch (e) {
       console.error(e);
+      setBusy(false);
       alert("影像處理失敗，請重拍或換一張。");
+      return;
+    }
+
+    // 解析菜單（Flash）
+    setBusy(true, "辨識與翻譯中…");
+    try {
+      const menu = await parseMenu(FLASH_MODEL);
+      state.menu = menu;
+      state.modelSource = "flash";
+      renderMenu();
+    } catch (e) {
+      console.error(e);
+      alert(messageForError(e)); // 完整錯誤處理於 Stage 7 精修
     } finally {
       setBusy(false);
     }
+  }
+
+  /* 錯誤碼 → 使用者訊息（§10，Stage 7 再完整化） */
+  function messageForError(e) {
+    const s = e && e.status;
+    if (s === 0) return "網路連線失敗，請確認已連網後再試。";
+    if (s === 401 || s === 403) return "API key 無效，請至設定重新輸入。";
+    if (s === 429) return "呼叫太頻繁或已達免費額度上限，稍後再試。";
+    if (e && e.message === "badjson") return "辨識結果格式異常，請重拍或重試。";
+    return "發生錯誤，請重試。";
   }
 
   /* =========================================================
