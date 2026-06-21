@@ -242,7 +242,16 @@
     .badge-unusual {
       font-size: 11px; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 6px;
-      padding: 0 5px; font-weight: 500;
+      padding: 0 5px; font-weight: 500; white-space: nowrap;
+    }
+    .ai-note {
+      font-size: 12px; color: var(--text-dim);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+      margin: 8px 2px 2px;
+      line-height: 1.5;
     }
     .info-btn {
       font-size: 20px; color: var(--text-dim);
@@ -733,6 +742,7 @@
 
     const cats = state.menu.categories || [];
     let html = "";
+    let hasUnusual = false;
 
     // 結果來源列 + 高精度(Pro)重試（§3.2 / §5.5）
     const srcLabel = state.modelSource === "pro" ? "Pro（高精度）" : "Flash";
@@ -741,27 +751,38 @@
     html += '<button id="pro-retry-btn" class="pro-retry-btn">高精度(Pro)重試</button>';
     html += "</div>";
 
+    let body = "";
     cats.forEach(cat => {
       const zh = escapeHtml(cat.category_zh || "未分類");
       const jp = cat.category_jp ? '<span class="cat-jp">' + escapeHtml(cat.category_jp) + "</span>" : "";
-      html += '<div class="cat-group">';
-      html += '<div class="cat-title">' + zh + jp + "</div>";
+      body += '<div class="cat-group">';
+      body += '<div class="cat-title">' + zh + jp + "</div>";
       (cat.items || []).forEach(item => {
         const price = item.price != null && item.price !== ""
           ? '<span class="item-price">' + escapeHtml(item.price) + "</span>" : "";
-        const unusual = item.is_unusual ? '<span class="badge-unusual">冷門</span>' : "";
-        html += '<div class="item-row" data-id="' + escapeHtml(item.id) + '">';
-        html += '  <div class="item-main">';
-        html += '    <div class="item-zh">' + escapeHtml(item.name_zh) + unusual + "</div>";
-        html += '    <div class="item-jp">' + escapeHtml(item.name_jp) + "</div>";
-        html += "  </div>";
-        html += price;
-        html += '  <button class="icon-btn info-btn" data-id="' + escapeHtml(item.id) +
+        let unusual = "";
+        if (item.is_unusual) {
+          hasUnusual = true;
+          unusual = '<span class="badge-unusual">值得一試</span>';
+        }
+        body += '<div class="item-row" data-id="' + escapeHtml(item.id) + '">';
+        body += '  <div class="item-main">';
+        body += '    <div class="item-zh">' + escapeHtml(item.name_zh) + unusual + "</div>";
+        body += '    <div class="item-jp">' + escapeHtml(item.name_jp) + "</div>";
+        body += "  </div>";
+        body += price;
+        body += '  <button class="icon-btn info-btn" data-id="' + escapeHtml(item.id) +
                 '" aria-label="料理說明">ⓘ</button>';
-        html += "</div>";
+        body += "</div>";
       });
-      html += "</div>";
+      body += "</div>";
     });
+
+    // AI 加註提示（僅在有被標記的品項時顯示，說明非原菜單內容）
+    if (hasUnusual) {
+      html += '<div class="ai-note">「值得一試」為 AI 自動標註的少見／特色料理提示，非原菜單內容。</div>';
+    }
+    html += body;
 
     listArea.innerHTML = html;
     renderBoxes(); // 同步建立原圖高亮框
