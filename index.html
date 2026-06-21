@@ -382,9 +382,9 @@
     <div class="topbar">
       <span class="title">菜單翻譯</span>
       <span class="spacer"></span>
-      <!-- 拍照／選圖（影像處理於 Stage 2 接上） -->
+      <!-- 拍照／選圖：不帶 capture，iOS 會同時提供「拍照」與「照片圖庫」 -->
       <label class="icon-btn" for="file-input" aria-label="拍照或選圖" role="button">📷</label>
-      <input id="file-input" type="file" accept="image/*" capture="environment" class="hidden">
+      <input id="file-input" type="file" accept="image/*" class="hidden">
       <button id="settings-btn" class="icon-btn btn-ghost" aria-label="設定">⚙️</button>
     </div>
 
