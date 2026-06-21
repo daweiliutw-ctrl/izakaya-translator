@@ -23,8 +23,10 @@ spec, stop and ask.
 
 ## Tech notes
 - Vanilla JS. Keep everything in `index.html` for v1.
-- Default model constant `FLASH_MODEL = "gemini-3.5-flash"` (free, vision + spatial;
-  current stable Flash confirmed against Google docs 2026-06, upgraded from 2.5).
+- Default model constant `FLASH_MODEL = "gemini-2.5-flash"` (free, vision + spatial).
+  NOTE: gemini-3.5-flash was tried but its free-tier quota is near-zero (immediate
+  429), so 2.5-flash is the default for free self-use. Thinking params differ by
+  family: 2.5 uses thinkingBudget (int), 3.x uses thinkingLevel — see flashThinking().
 - `PRO_MODEL = "gemini-3.1-pro-preview"` for manual high-accuracy retry only; confirm
   the current Pro model id against Google docs at build time (names change).
 - Structured output via response_mime_type + response_schema (spec §5).

@@ -487,17 +487,23 @@
   /* =========================================================
    * 易改常數（建置時可調整）
    * =======================================================*/
-  const FLASH_MODEL = "gemini-3.5-flash";           // 預設、免費；官方現行穩定 Flash（2026-06 確認）
+  const FLASH_MODEL = "gemini-2.5-flash";           // 預設、免費；免費層額度較穩、視覺＋定位佳
   // 手動高精度重試。向官方文件確認（2026-06）：Developer API 現行 Pro 為 gemini-3.1-pro-preview
   // （ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview）。需 key 所屬專案開通付費。
   const PRO_MODEL   = "gemini-3.1-pro-preview";
   const API_BASE    = "https://generativelanguage.googleapis.com/v1beta/models";
   const MAX_LONG_EDGE = 2048;                        // 影像長邊上限（px）
   const JPEG_QUALITY  = 0.85;
-  // 思考等級：minimal/low/medium/high。
-  // 解析需要 box_2d 定位 → 維持較高(medium)以保住「點圖跳翻譯」；說明為純文字 → 用 low 加速（§5.2）。
-  const PARSE_THINKING_LEVEL = "medium";
-  const EXPLAIN_THINKING_LEVEL = "low";
+  // 思考參數依模型家族而異：2.5 系列用 thinkingBudget(整數)，3.x 用 thinkingLevel。
+  // 解析需 box_2d 定位 → 維持較高思考保住「點圖跳翻譯」；說明為純文字 → 降思考加速（§5.2）。
+  function flashThinking(purpose) {
+    const is25 = /(^|[^\d])2\.5(?!\d)/.test(FLASH_MODEL); // 例：gemini-2.5-flash
+    if (purpose === "explain") {
+      return is25 ? { thinkingBudget: 0 } : { thinkingLevel: "low" };
+    }
+    // parse：2.5 用預設動態思考（傳 null＝不覆寫）；3.x 指定 medium
+    return is25 ? null : { thinkingLevel: "medium" };
+  }
   const PARSE_TIMEOUT_MS = 45000;                    // 解析（含送圖）單次逾時
   const TEXT_TIMEOUT_MS  = 30000;                    // 純文字說明單次逾時
   const LS_KEY = "izakaya.geminiKey";                // localStorage 鍵名
@@ -773,7 +779,8 @@
     };
     // Flash 解析維持較高思考以保住 box_2d 定位準度；Pro 維持預設
     if (model === FLASH_MODEL) {
-      generationConfig.thinkingConfig = { thinkingLevel: PARSE_THINKING_LEVEL };
+      const tc = flashThinking("parse");
+      if (tc) generationConfig.thinkingConfig = tc;
     }
     const raw = await geminiGenerate(model, parts, generationConfig, { timeoutMs: PARSE_TIMEOUT_MS, tries: 3 });
     let parsed;
@@ -995,10 +1002,11 @@
     body.classList.add("loading");
     body.textContent = "說明產生中…";
     try {
+      const explainTc = flashThinking("explain"); // 純文字、降思考加速（依模型家族）
       const text = await geminiGenerate(
         FLASH_MODEL,
         [{ text: explainPrompt(item) }],
-        { thinkingConfig: { thinkingLevel: EXPLAIN_THINKING_LEVEL } }, // 純文字、降思考加速
+        explainTc ? { thinkingConfig: explainTc } : {},
         { timeoutMs: TEXT_TIMEOUT_MS, tries: 2 }
       );
       const trimmed = (text || "").trim();
