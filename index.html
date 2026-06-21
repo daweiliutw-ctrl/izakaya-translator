@@ -237,6 +237,43 @@
       min-width: var(--tap); min-height: var(--tap);
     }
 
+    /* ---------- Bottom sheet (§6) ---------- */
+    .sheet-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 40;
+    }
+    .sheet-backdrop.show { opacity: 1; pointer-events: auto; }
+    .sheet {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      background: var(--surface);
+      border-top-left-radius: 18px; border-top-right-radius: 18px;
+      border-top: 1px solid var(--border);
+      padding: 8px 18px calc(var(--safe-bottom) + 20px);
+      transform: translateY(100%);
+      transition: transform 0.25s ease;
+      z-index: 41;
+      max-height: 80vh; overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sheet.show { transform: translateY(0); }
+    .sheet-grip {
+      width: 40px; height: 4px; border-radius: 2px;
+      background: var(--border);
+      margin: 6px auto 10px;
+    }
+    .sheet-head { display: flex; align-items: flex-start; gap: 10px; }
+    .sheet-titles { flex: 1; min-width: 0; }
+    .sheet-title { font-size: 18px; font-weight: 700; }
+    .sheet-sub { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+    .sheet-body { font-size: 16px; line-height: 1.7; margin-top: 12px; min-height: 48px; }
+    .sheet-body.loading { color: var(--text-dim); }
+    .sheet-body .retry-link {
+      color: var(--accent); text-decoration: underline; cursor: pointer;
+    }
+
     /* ---------- Processing overlay ---------- */
     #busy {
       position: fixed; inset: 0;
@@ -332,6 +369,20 @@
     </div>
   </section>
 
+  <!-- 料理說明 sheet（由下滑出） -->
+  <div id="sheet-backdrop" class="sheet-backdrop" aria-hidden="true"></div>
+  <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-grip"></div>
+    <div class="sheet-head">
+      <div class="sheet-titles">
+        <div class="sheet-title" id="sheet-title"></div>
+        <div class="sheet-sub" id="sheet-sub"></div>
+      </div>
+      <button id="sheet-close" class="icon-btn btn-ghost" aria-label="關閉">✕</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+
   <!-- 處理中遮罩 -->
   <div id="busy">
     <div class="spinner"></div>
@@ -367,7 +418,12 @@
 
 只輸出符合 schema 的 JSON，不要任何額外文字、說明或 markdown 標記。`;
 
-  /* 回應 schema（§5.4） */
+  /* 料理說明的 prompt（§6）；以品項名稱代入 */
+  function explainPrompt(item) {
+    return "用繁體中文（台灣用語，禁簡體與大陸用語）向台灣旅客說明這道日本料理：\n" +
+      (item.name_jp || "") + "（" + (item.name_zh || "") + "）。\n" +
+      "請說明：它是什麼、口感與風味特色、常見吃法。3 至 4 句，口語、實用，不要寒暄。";
+  }
   const PARSE_SCHEMA = {
     type: "object",
     properties: {
@@ -731,6 +787,57 @@
   }
 
   /* =========================================================
+   * 功能三：料理說明 sheet（§6）
+   * =======================================================*/
+  function openSheet() {
+    document.getElementById("sheet-backdrop").classList.add("show");
+    document.getElementById("sheet").classList.add("show");
+  }
+  function closeSheet() {
+    document.getElementById("sheet-backdrop").classList.remove("show");
+    document.getElementById("sheet").classList.remove("show");
+  }
+
+  function renderExplanation(text) {
+    const body = document.getElementById("sheet-body");
+    body.classList.remove("loading");
+    body.textContent = text;
+  }
+
+  async function explainItem(id) {
+    const item = findItem(id);
+    if (!item) return;
+
+    // 標題：name_zh（主）、name_jp（小字）
+    document.getElementById("sheet-title").textContent = item.name_zh || item.name_jp || "";
+    document.getElementById("sheet-sub").textContent = item.name_jp || "";
+    const body = document.getElementById("sheet-body");
+    openSheet();
+
+    // 已快取則直接顯示，不重複呼叫
+    if (item.explanation) { renderExplanation(item.explanation); return; }
+
+    body.classList.add("loading");
+    body.textContent = "說明產生中…";
+    try {
+      const text = await geminiGenerate(
+        FLASH_MODEL,
+        [{ text: explainPrompt(item) }],
+        {} // 純文字、不需 schema
+      );
+      const trimmed = (text || "").trim();
+      if (!trimmed) throw new ApiError("badjson", -1);
+      item.explanation = trimmed; // 快取進該品項物件（§6）
+      renderExplanation(trimmed);
+    } catch (e) {
+      console.error(e);
+      body.classList.remove("loading");
+      body.innerHTML = escapeHtml(messageForError(e)) +
+        ' <span class="retry-link" data-id="' + escapeHtml(id) + '">重試</span>';
+    }
+  }
+
+  /* =========================================================
    * 處理選圖：正規化 → 顯示 → Gemini 解析（Flash）→ 渲染
    * =======================================================*/
   async function handleFile(file) {
@@ -815,11 +922,19 @@
     document.getElementById("list-area").addEventListener("click", (e) => {
       const infoBtn = e.target.closest(".info-btn");
       if (infoBtn) {
-        // TODO Stage 5: 顯示料理說明 sheet
+        explainItem(infoBtn.dataset.id);
         return;
       }
       const row = e.target.closest(".item-row");
       if (row) highlightItem(row.dataset.id);
+    });
+
+    // 料理說明 sheet：關閉與重試
+    document.getElementById("sheet-close").addEventListener("click", closeSheet);
+    document.getElementById("sheet-backdrop").addEventListener("click", closeSheet);
+    document.getElementById("sheet-body").addEventListener("click", (e) => {
+      const retry = e.target.closest(".retry-link");
+      if (retry) explainItem(retry.dataset.id);
     });
   }
 
