@@ -250,6 +250,35 @@
       min-width: var(--tap); min-height: var(--tap);
     }
 
+    /* ---------- Inline error card (§10, retryable, no white screen) ---------- */
+    .error-card {
+      margin: 24px 4px;
+      padding: 18px;
+      background: var(--surface);
+      border: 1px solid var(--danger);
+      border-radius: 14px;
+      text-align: center;
+    }
+    .error-card .emoji { font-size: 30px; }
+    .error-card .msg { margin: 8px 0 14px; color: var(--text); }
+    .error-card .actions { display: flex; gap: 10px; justify-content: center; }
+
+    /* ---------- Toast (transient, non-blocking) ---------- */
+    #toast {
+      position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + 24px);
+      transform: translateX(-50%) translateY(20px);
+      max-width: 88%;
+      background: #2a3a26; color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px; font-size: 14px; line-height: 1.5;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 60;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.danger { background: #3a2622; }
+
     /* ---------- Bottom sheet (§6) ---------- */
     .sheet-backdrop {
       position: fixed; inset: 0;
@@ -396,6 +425,9 @@
     <div class="sheet-body" id="sheet-body"></div>
   </div>
 
+  <!-- 輕量提示 -->
+  <div id="toast" role="status" aria-live="polite"></div>
+
   <!-- 處理中遮罩 -->
   <div id="busy">
     <div class="spinner"></div>
@@ -492,6 +524,17 @@
     const el = document.getElementById("busy");
     if (text) document.getElementById("busy-text").textContent = text;
     el.classList.toggle("show", !!on);
+  }
+
+  /* 輕量提示（暫時、非阻斷） */
+  let _toastTimer = null;
+  function showToast(text, danger) {
+    const el = document.getElementById("toast");
+    el.textContent = text;
+    el.classList.toggle("danger", !!danger);
+    el.classList.add("show");
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.remove("show"), 4200);
   }
 
   /* =========================================================
@@ -865,15 +908,23 @@
       state.imageBase64  = norm.base64;
       state.imageW = norm.w;
       state.imageH = norm.h;
+      // 新照片：清掉舊結果再顯示
+      state.menu = null;
+      state.modelSource = null;
+      document.getElementById("list-area").innerHTML = "";
       showImage(norm.dataUrl);
     } catch (e) {
       console.error(e);
       setBusy(false);
-      alert("影像處理失敗，請重拍或換一張。");
+      showToast("影像處理失敗，請重拍或換一張。", true);
       return;
     }
+    await runFlashParse();
+  }
 
-    // 解析菜單（Flash）
+  /* 以 Flash 解析目前影像並渲染；失敗顯示行內可重試錯誤卡（§10，不白屏） */
+  async function runFlashParse() {
+    if (!state.imageBase64) return;
     setBusy(true, "辨識與翻譯中…");
     try {
       const menu = await parseMenu(FLASH_MODEL);
@@ -882,10 +933,31 @@
       renderMenu();
     } catch (e) {
       console.error(e);
-      alert(messageForError(e)); // 完整錯誤處理於 Stage 7 精修
+      showParseError(e);
     } finally {
       setBusy(false);
     }
+  }
+
+  /* 主解析失敗 → 行內錯誤卡（保留原圖、可重試；key 問題另給前往設定） */
+  function showParseError(e) {
+    const listArea = document.getElementById("list-area");
+    const keyIssue = isKeyError(e);
+    let actions = '<button class="btn-primary" id="err-retry">重試</button>';
+    if (keyIssue) actions += '<button id="err-settings">前往設定</button>';
+    listArea.innerHTML =
+      '<div class="error-card">' +
+      '  <div class="emoji">⚠️</div>' +
+      '  <div class="msg">' + escapeHtml(messageForError(e)) + "</div>" +
+      '  <div class="actions">' + actions + "</div>" +
+      "</div>";
+    const retry = document.getElementById("err-retry");
+    if (retry) retry.addEventListener("click", runFlashParse);
+    const goSettings = document.getElementById("err-settings");
+    if (goSettings) goSettings.addEventListener("click", () => {
+      renderSettings();
+      showView("settings");
+    });
   }
 
   /* =========================================================
@@ -905,10 +977,10 @@
       console.error(e);
       // Pro 專屬 403：key 所屬專案未開通付費（保留 Flash 結果，不清空）
       if (e && e.status === 403) {
-        alert("此 API key 未開通付費方案，無法使用高精度模型；" +
-              "請至 Google AI Studio 開啟帳單，或繼續使用免費結果。");
+        showToast("此 API key 未開通付費方案，無法使用高精度模型；" +
+              "請至 Google AI Studio 開啟帳單，或繼續使用免費結果。", true);
       } else {
-        alert(messageForError(e));
+        showToast(messageForError(e), true);
       }
       // 不動 state.menu / modelSource，原結果保留
     } finally {
@@ -916,12 +988,17 @@
     }
   }
 
-  /* 錯誤碼 → 使用者訊息（§10，Stage 7 再完整化） */
+  /* 是否為 API key 類錯誤（一般 401/403） */
+  function isKeyError(e) {
+    return e && (e.status === 401 || e.status === 403);
+  }
+
+  /* 錯誤碼 → 使用者訊息（§10） */
   function messageForError(e) {
     const s = e && e.status;
-    if (s === 0) return "網路連線失敗，請確認已連網後再試。";
+    if (s === 0) return "網路連線失敗，請確認手機已連上網路後再試。";
     if (s === 401 || s === 403) return "API key 無效，請至設定重新輸入。";
-    if (s === 429) return "呼叫太頻繁或已達免費額度上限，稍後再試。";
+    if (s === 429) return "呼叫太頻繁或已達免費額度上限，請稍後再試。";
     if (e && e.message === "badjson") return "辨識結果格式異常，請重拍或重試。";
     return "發生錯誤，請重試。";
   }
